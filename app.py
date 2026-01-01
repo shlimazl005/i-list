@@ -4,27 +4,30 @@ from ics import Calendar, Event
 import re
 
 # --- SAYFA AYARLARI ---
-st.set_page_config(page_title="Pro Takvim (Fix)", page_icon="✅", layout="wide")
+st.set_page_config(page_title="Pro Asistan Takvimi", page_icon="🗓️", layout="wide")
 
-st.title("✅ Ortopedi Asistan Takvimi (Hatasız Sürüm)")
+st.title("🗓️ Ortopedi Asistan Takvimi (Final v2)")
 st.markdown("""
-**Özellikler:**
-1. **Döngüsel Dağıtım:** Uzman sayısından fazla masa varsa sırayla dağıtır.
-2. **Nöbet Ertesi:** Otomatik izin olarak işlenir.
-3. **Sayısal Veriler:** İstatistik tablosu hatasız çalışır.
+**Düzeltmeler:**
+1. **Ameliyat Sayacı:** Artık "Diğer" sekmesine karışmıyor, doğru sayıyor.
+2. **Başlık Algılama:** "Tarih" yazmasa bile Nöbet/Ameliyat satırını bulur.
+3. **Karakter Sorunu:** Türkçe karakterler (İ/I) tam düzeltildi.
 """)
 
 # --- YARDIMCI FONKSİYONLAR ---
 
-def clean_text_for_comparison(text):
-    """Karşılaştırma için metni temizler"""
+def tr_lower(text):
+    """Türkçe karakter uyumlu küçültme"""
     if pd.isna(text): return ""
-    text = str(text).lower()
-    text = text.replace('\xa0', ' ').replace('\t', ' ').strip()
-    mapping = {'İ': 'i', 'I': 'ı', 'Ş': 'ş', 'Ğ': 'ğ', 'Ü': 'ü', 'Ö': 'ö', 'Ç': 'ç'}
+    text = str(text)
+    # Önce manuel değişim
+    mapping = {
+        'İ': 'i', 'I': 'ı', 'Ş': 'ş', 'Ğ': 'ğ', 'Ü': 'ü', 'Ö': 'ö', 'Ç': 'ç',
+        'Â': 'a', 'Î': 'i', 'Û': 'u'
+    }
     for source, target in mapping.items():
-        text = text.replace(source.lower(), target)
-    return text
+        text = text.replace(source, target)
+    return text.lower().strip()
 
 def clean_text_display(text):
     """Görüntüleme için temiz metin"""
@@ -43,11 +46,12 @@ def deduplicate_columns(df):
     df.columns = cols
     return df
 
-def load_and_fix_df(file):
-    """Dosyayı okur ve düzenler"""
+def find_header_and_load(file):
+    """Dosyayı okur ve EN DOĞRU başlık satırını bulur"""
     encodings = ['utf-8', 'iso-8859-9', 'windows-1254']
     df = None
     
+    # 1. Dosyayı Oku
     for enc in encodings:
         try:
             file.seek(0)
@@ -61,23 +65,36 @@ def load_and_fix_df(file):
             
     if df is None: return pd.DataFrame()
 
-    # Başlık satırını bul
-    header_idx = -1
-    for i, row in df.iterrows():
+    # 2. Akıllı Başlık Tespiti
+    # Satırdaki anahtar kelime sayısına bakar. En çok anahtar kelime içeren satır başlıktır.
+    keywords = ['nöbet', 'ameliyat', 'pol', 'servis', 'acil', 'icap', 'asistan', 'klinik']
+    
+    best_header_idx = -1
+    max_matches = 0
+    
+    for i in range(min(20, len(df))): # İlk 20 satıra bakmak yeterli
         row_text = " ".join([str(x) for x in row.values]).lower()
-        if ('pazartesi' in row_text or 'tarih' in row_text) and ('nöbet' in row_text or 'pol' in row_text):
-            header_idx = i
-            break
+        # Türkçe karakter düzeltmesi yaparak kontrol et
+        row_text = tr_lower(row_text)
+        
+        matches = sum(1 for k in keywords if k in row_text)
+        
+        if matches > max_matches:
+            max_matches = matches
+            best_header_idx = i
+            
+    # Eğer hiç eşleşme bulamazsa (çok garip dosya), 0. satırı al
+    if best_header_idx == -1:
+        best_header_idx = 0
     
-    if header_idx != -1:
-        df.columns = df.iloc[header_idx].astype(str)
-        df = df.iloc[header_idx+1:].reset_index(drop=True)
-    else:
-        df.columns = df.iloc[0].astype(str)
-        df = df.iloc[1:].reset_index(drop=True)
+    # DataFrame'i başlığa göre kes
+    df.columns = df.iloc[best_header_idx].astype(str)
+    df = df.iloc[best_header_idx+1:].reset_index(drop=True)
     
+    # Sütun isimlerini temizle ve benzersiz yap
     df = deduplicate_columns(df)
     
+    # Tarih sütununu ayarla (Genelde ilk sütundur)
     try:
         df.iloc[:, 0] = pd.to_datetime(df.iloc[:, 0], dayfirst=True, errors='coerce')
         df = df.dropna(subset=[df.columns[0]])
@@ -99,36 +116,44 @@ user_name_input = st.text_input("Adın Soyadın:", placeholder="Örn: Tahir").st
 # --- ANA MOTOR ---
 
 if st.button("Takvimi Oluştur 🚀") and asistan_file and uzman_file and user_name_input:
-    df_asist = load_and_fix_df(asistan_file)
-    df_uzman = load_and_fix_df(uzman_file)
+    df_asist = find_header_and_load(asistan_file)
+    df_uzman = find_header_and_load(uzman_file)
     
     if df_asist.empty:
-        st.error("Dosya okunamadı.")
+        st.error("Dosya okunamadı veya boş.")
     else:
         cal = Calendar()
         stats = {"Nöbet": 0, "Nöbet Ertesi": 0, "Ameliyat": 0, "Poliklinik": 0, "Diğer": 0}
         
-        # Sütun Grupları
+        # --- SÜTUN ANALİZİ ---
+        # Sütunları kategorize et
         cols_nobet_ekibi = []
+        raw_cols_ameliyat = []
+        
         for c in df_asist.columns:
-            cl = clean_text_for_comparison(c)
-            # Nöbet Ertesi sütunlarını ekibe dahil etme
+            cl = tr_lower(c) # Temiz sütun adı
+            
+            # Nöbet Ekibi (Ertesi hariç)
             if ("nöbet" in cl or "acil" in cl or "icap" in cl) and "ertes" not in cl:
                 cols_nobet_ekibi.append(c)
+                
+            # Ameliyat Sütunları
+            if "ameliyat" in cl and "nöbet" not in cl:
+                raw_cols_ameliyat.append(c)
 
-        # Ameliyat sütunlarını bul ve SIRALA
-        raw_cols_ameliyat = [c for c in df_asist.columns if "ameliyat" in clean_text_for_comparison(c) and "nöbet" not in clean_text_for_comparison(c)]
-        cols_ameliyat = sorted(raw_cols_ameliyat, key=lambda x: extract_number(x))
+        # Ameliyatları numarasına göre sırala (Masa 1, Masa 2...)
+        cols_ameliyat = sorted(raw_cols_ameliyat, key=lambda x: extract_number(tr_lower(x)))
         
         found_count = 0
         
         for tarih, row in df_asist.iterrows():
             my_task_col = None
             
-            # Kişiyi Bul
+            # İsmi Satırda Ara
             for col in df_asist.columns:
-                cell_val = clean_text_for_comparison(row[col])
-                target_name = clean_text_for_comparison(user_name_input)
+                cell_val = tr_lower(row[col])
+                target_name = tr_lower(user_name_input)
+                
                 if len(target_name) > 2 and target_name in cell_val:
                     my_task_col = col
                     break
@@ -140,8 +165,9 @@ if st.button("Takvimi Oluştur 🚀") and asistan_file and uzman_file and user_n
             event.begin = tarih
             event.make_all_day()
             
+            # Görüntüleme adı (NÖBET_1 -> NÖBET)
             display_col = my_task_col.rsplit('_', 1)[0] if '_' in my_task_col else my_task_col
-            task_lower = clean_text_for_comparison(display_col)
+            task_lower = tr_lower(display_col)
             
             baslik = ""
             aciklama = f"📅 Tarih: {tarih.strftime('%d.%m.%Y')}\n"
@@ -160,13 +186,12 @@ if st.button("Takvimi Oluştur 🚀") and asistan_file and uzman_file and user_n
             elif "nöbet" in task_lower or "icap" in task_lower:
                 stats["Nöbet"] += 1
                 
-                # Nöbetçi Uzmanı Bul
+                # Nöbetçi Uzman Eşleşmesi
                 uzman_adi = ""
-                if tarih in df_uzman.index:
+                if not df_uzman.empty and tarih in df_uzman.index:
                     u_row = df_uzman.loc[tarih]
                     for u_col in df_uzman.columns:
-                        val_uzman = str(u_row[u_col])
-                        if "nöbet" in clean_text_for_comparison(val_uzman):
+                        if "nöbet" in tr_lower(str(u_row[u_col])):
                             uzman_adi = u_col
                             break
                 
@@ -176,19 +201,18 @@ if st.button("Takvimi Oluştur 🚀") and asistan_file and uzman_file and user_n
                 else:
                     baslik = f"🚨 NÖBET ({display_col})"
 
-                # Nöbet Ekibi
+                # Ekip
                 ekip = []
                 for nc in cols_nobet_ekibi:
                     val = clean_text_display(row[nc])
-                    if len(val) > 2 and "nan" not in val.lower():
-                        clean_nc = nc.rsplit('_', 1)[0] if '_' in nc else nc
-                        ekip.append(f"- {val} ({clean_nc})")
-                
+                    if len(val) > 2 and "nan" not in tr_lower(val):
+                        c_cl = nc.rsplit('_', 1)[0] if '_' in nc else nc
+                        ekip.append(f"- {val} ({c_cl})")
                 if ekip:
                     aciklama += f"\n\n💀 NÖBET EKİBİ:\n" + "\n".join(ekip)
 
             # ---------------------------------------------------------
-            # 3. AMELİYAT (DÖNGÜSEL DAĞITIM)
+            # 3. AMELİYAT
             # ---------------------------------------------------------
             elif "ameliyat" in task_lower:
                 stats["Ameliyat"] += 1
@@ -199,37 +223,37 @@ if st.button("Takvimi Oluştur 🚀") and asistan_file and uzman_file and user_n
                     masa_sirasi = 0
                 
                 ameliyatci_hocalar = []
-                if tarih in df_uzman.index:
+                if not df_uzman.empty and tarih in df_uzman.index:
                     u_row = df_uzman.loc[tarih]
                     for u_col in df_uzman.columns:
-                        gorev = clean_text_for_comparison(str(u_row[u_col]))
+                        gorev = tr_lower(str(u_row[u_col]))
                         if "ameliyat" in gorev and "nöbet" not in gorev:
                             ameliyatci_hocalar.append(u_col)
                 
                 if len(ameliyatci_hocalar) > 0:
                     atanan_index = masa_sirasi % len(ameliyatci_hocalar)
                     eslesen_hoca = ameliyatci_hocalar[atanan_index]
-                    
                     baslik = f"{display_col} - {eslesen_hoca}"
-                    aciklama += f"\n📍 Masa: {display_col}\n🔪 Eşleşen Uzman: {eslesen_hoca}"
+                    aciklama += f"\n📍 Masa: {display_col}\n🔪 Uzman: {eslesen_hoca}"
                     if masa_sirasi >= len(ameliyatci_hocalar):
-                        aciklama += "\n(Not: Uzman sayısından fazla masa olduğu için döngüsel atama yapıldı.)"
+                        aciklama += "\n(Not: Döngüsel atama yapıldı)"
                 else:
                     baslik = f"{display_col}"
-                    aciklama += f"\n📍 Masa: {display_col}\n⚠️ Bugün ameliyat listesinde uzman görünmüyor."
+                    aciklama += f"\n📍 Masa: {display_col}\n(Uzman listesinde ameliyatçı görünmüyor)"
 
             # ---------------------------------------------------------
-            # 4. POLİKLİNİK (HATA BURADAYDI - DÜZELTİLDİ)
+            # 4. POLİKLİNİK
             # ---------------------------------------------------------
             elif "pol" in task_lower:
                 stats["Poliklinik"] += 1
                 pol_num = extract_number(display_col)
                 eslesen_hoca = None
                 
-                if tarih in df_uzman.index and pol_num != 999:
+                if not df_uzman.empty and tarih in df_uzman.index and pol_num != 999:
                     u_row = df_uzman.loc[tarih]
                     for u_col in df_uzman.columns:
-                        u_gorev = clean_text_for_comparison(str(u_row[u_col]))
+                        u_gorev = tr_lower(str(u_row[u_col]))
+                        # Pol ve numara kontrolü
                         if "pol" in u_gorev and extract_number(u_gorev) == pol_num:
                             eslesen_hoca = u_col
                             break
@@ -254,22 +278,22 @@ if st.button("Takvimi Oluştur 🚀") and asistan_file and uzman_file and user_n
 
         # --- SONUÇ ---
         if found_count > 0:
-            st.success(f"✅ Takvim Hazır! Toplam {found_count} görev işlendi.")
+            st.success(f"✅ Takvim Hazır! {found_count} görev bulundu.")
             
-            st.markdown("### 📊 Aylık Çalışma Özeti")
+            st.markdown("### 📊 Aylık İstatistik")
             c1, c2, c3, c4, c5 = st.columns(5)
-            c1.metric("Nöbet Sayısı", stats["Nöbet"])
-            c2.metric("Nöbet Ertesi", stats["Nöbet Ertesi"])
+            c1.metric("Nöbet", stats["Nöbet"])
+            c2.metric("Ertesi (İzin)", stats["Nöbet Ertesi"])
             c3.metric("Ameliyat", stats["Ameliyat"])
             c4.metric("Poliklinik", stats["Poliklinik"])
-            c5.metric("Diğer/Acil", stats["Diğer"])
+            c5.metric("Diğer", stats["Diğer"])
             
             safe_name = user_name_input.replace(" ", "_")
             st.download_button(
                 label="📅 Takvimi İndir (.ics)",
                 data=str(cal),
-                file_name=f"Nobet_{safe_name}.ics",
+                file_name=f"Takvim_{safe_name}.ics",
                 mime="text/calendar"
             )
         else:
-            st.warning("⚠️ İsim bulunamadı. Lütfen kontrol edip tekrar deneyin.")
+            st.warning("⚠️ İsim bulunamadı. Lütfen kontrol et.")

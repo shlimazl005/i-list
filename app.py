@@ -6,12 +6,11 @@ import re
 # --- SAYFA AYARLARI ---
 st.set_page_config(page_title="Pro Asistan Takvimi", page_icon="🗓️", layout="wide")
 
-st.title("🗓️ Ortopedi Asistan Takvimi (Final v2)")
+st.title("🗓️ Ortopedi Asistan Takvimi (Final v3)")
 st.markdown("""
-**Düzeltmeler:**
-1. **Ameliyat Sayacı:** Artık "Diğer" sekmesine karışmıyor, doğru sayıyor.
-2. **Başlık Algılama:** "Tarih" yazmasa bile Nöbet/Ameliyat satırını bulur.
-3. **Karakter Sorunu:** Türkçe karakterler (İ/I) tam düzeltildi.
+**Durum:** ✅ Kod hatası (row definition) giderildi.
+✅ Ameliyat sayıları "Diğer"e karışmadan doğru sayılıyor.
+✅ Başlık satırı otomatik bulunuyor.
 """)
 
 # --- YARDIMCI FONKSİYONLAR ---
@@ -20,7 +19,6 @@ def tr_lower(text):
     """Türkçe karakter uyumlu küçültme"""
     if pd.isna(text): return ""
     text = str(text)
-    # Önce manuel değişim
     mapping = {
         'İ': 'i', 'I': 'ı', 'Ş': 'ş', 'Ğ': 'ğ', 'Ü': 'ü', 'Ö': 'ö', 'Ç': 'ç',
         'Â': 'a', 'Î': 'i', 'Û': 'u'
@@ -35,6 +33,7 @@ def clean_text_display(text):
     return str(text).replace('\xa0', ' ').strip()
 
 def extract_number(text):
+    """Metin içindeki sayıyı bulur"""
     nums = re.findall(r'\d+', text)
     return int(nums[0]) if nums else 999
 
@@ -47,7 +46,7 @@ def deduplicate_columns(df):
     return df
 
 def find_header_and_load(file):
-    """Dosyayı okur ve EN DOĞRU başlık satırını bulur"""
+    """Dosyayı okur ve EN DOĞRU başlık satırını bulur (Hata Düzeltildi)"""
     encodings = ['utf-8', 'iso-8859-9', 'windows-1254']
     df = None
     
@@ -66,24 +65,25 @@ def find_header_and_load(file):
     if df is None: return pd.DataFrame()
 
     # 2. Akıllı Başlık Tespiti
-    # Satırdaki anahtar kelime sayısına bakar. En çok anahtar kelime içeren satır başlıktır.
     keywords = ['nöbet', 'ameliyat', 'pol', 'servis', 'acil', 'icap', 'asistan', 'klinik']
     
     best_header_idx = -1
     max_matches = 0
     
-    for i in range(min(20, len(df))): # İlk 20 satıra bakmak yeterli
+    # İlk 20 satırı tara
+    for i in range(min(20, len(df))):
+        # --- DÜZELTİLEN KISIM BAŞLANGIÇ ---
+        row = df.iloc[i] # Satır verisini 'i' indexine göre çekiyoruz
         row_text = " ".join([str(x) for x in row.values]).lower()
-        # Türkçe karakter düzeltmesi yaparak kontrol et
-        row_text = tr_lower(row_text)
+        # --- DÜZELTİLEN KISIM BİTİŞ ---
         
+        row_text = tr_lower(row_text)
         matches = sum(1 for k in keywords if k in row_text)
         
         if matches > max_matches:
             max_matches = matches
             best_header_idx = i
             
-    # Eğer hiç eşleşme bulamazsa (çok garip dosya), 0. satırı al
     if best_header_idx == -1:
         best_header_idx = 0
     
@@ -91,10 +91,10 @@ def find_header_and_load(file):
     df.columns = df.iloc[best_header_idx].astype(str)
     df = df.iloc[best_header_idx+1:].reset_index(drop=True)
     
-    # Sütun isimlerini temizle ve benzersiz yap
+    # Sütun isimlerini temizle
     df = deduplicate_columns(df)
     
-    # Tarih sütununu ayarla (Genelde ilk sütundur)
+    # Tarih sütununu ayarla
     try:
         df.iloc[:, 0] = pd.to_datetime(df.iloc[:, 0], dayfirst=True, errors='coerce')
         df = df.dropna(subset=[df.columns[0]])
@@ -126,12 +126,11 @@ if st.button("Takvimi Oluştur 🚀") and asistan_file and uzman_file and user_n
         stats = {"Nöbet": 0, "Nöbet Ertesi": 0, "Ameliyat": 0, "Poliklinik": 0, "Diğer": 0}
         
         # --- SÜTUN ANALİZİ ---
-        # Sütunları kategorize et
         cols_nobet_ekibi = []
         raw_cols_ameliyat = []
         
         for c in df_asist.columns:
-            cl = tr_lower(c) # Temiz sütun adı
+            cl = tr_lower(c) 
             
             # Nöbet Ekibi (Ertesi hariç)
             if ("nöbet" in cl or "acil" in cl or "icap" in cl) and "ertes" not in cl:
@@ -141,7 +140,7 @@ if st.button("Takvimi Oluştur 🚀") and asistan_file and uzman_file and user_n
             if "ameliyat" in cl and "nöbet" not in cl:
                 raw_cols_ameliyat.append(c)
 
-        # Ameliyatları numarasına göre sırala (Masa 1, Masa 2...)
+        # Ameliyatları sırala
         cols_ameliyat = sorted(raw_cols_ameliyat, key=lambda x: extract_number(tr_lower(x)))
         
         found_count = 0
@@ -165,7 +164,7 @@ if st.button("Takvimi Oluştur 🚀") and asistan_file and uzman_file and user_n
             event.begin = tarih
             event.make_all_day()
             
-            # Görüntüleme adı (NÖBET_1 -> NÖBET)
+            # Görüntüleme adı
             display_col = my_task_col.rsplit('_', 1)[0] if '_' in my_task_col else my_task_col
             task_lower = tr_lower(display_col)
             
@@ -186,7 +185,7 @@ if st.button("Takvimi Oluştur 🚀") and asistan_file and uzman_file and user_n
             elif "nöbet" in task_lower or "icap" in task_lower:
                 stats["Nöbet"] += 1
                 
-                # Nöbetçi Uzman Eşleşmesi
+                # Nöbetçi Uzman
                 uzman_adi = ""
                 if not df_uzman.empty and tarih in df_uzman.index:
                     u_row = df_uzman.loc[tarih]
@@ -212,7 +211,7 @@ if st.button("Takvimi Oluştur 🚀") and asistan_file and uzman_file and user_n
                     aciklama += f"\n\n💀 NÖBET EKİBİ:\n" + "\n".join(ekip)
 
             # ---------------------------------------------------------
-            # 3. AMELİYAT
+            # 3. AMELİYAT (Düzeltildi)
             # ---------------------------------------------------------
             elif "ameliyat" in task_lower:
                 stats["Ameliyat"] += 1
@@ -253,7 +252,6 @@ if st.button("Takvimi Oluştur 🚀") and asistan_file and uzman_file and user_n
                     u_row = df_uzman.loc[tarih]
                     for u_col in df_uzman.columns:
                         u_gorev = tr_lower(str(u_row[u_col]))
-                        # Pol ve numara kontrolü
                         if "pol" in u_gorev and extract_number(u_gorev) == pol_num:
                             eslesen_hoca = u_col
                             break
